@@ -49,4 +49,5 @@ https://your-service.up.railway.app/predict
 ## 5. Notes
 - The health endpoint is `/`.
 - Large TensorFlow model loading can make cold starts slower than a typical Flask app.
+- The deployed backend model at `backend/model/fake_job_bilstm.keras` is committed as a normal Git file so Docker builds always include it.
 - User feedback submitted to `/submit-feedback` is written to the local container filesystem, so it will not be durable across redeploys unless you later add a database or volume.

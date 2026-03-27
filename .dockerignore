@@ -7,6 +7,7 @@ __pycache__/
 *.stderr.log
 *.stdout.log
 data/
+models/
 fakejob-main/
 notebooks/
 generate_tokenizer.py

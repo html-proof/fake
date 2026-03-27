@@ -33,7 +33,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 WINDOWS_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-if os.name == "nt" and os.path.exists(WINDOWS_TESSERACT_PATH):
+TESSERACT_CMD = os.getenv("TESSERACT_CMD")
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+elif os.name == "nt" and os.path.exists(WINDOWS_TESSERACT_PATH):
     pytesseract.pytesseract.tesseract_cmd = WINDOWS_TESSERACT_PATH
 app = Flask(__name__)
 CORS(app)
@@ -470,4 +473,8 @@ def submit_feedback():
 # RUN SERVER
 # ===============================
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        debug=True,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "5000"))
+    )

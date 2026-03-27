@@ -4,9 +4,21 @@ import os
 import json
 import re
 import pickle
+import gc
 import numpy as np
 import tensorflow as tf
 from werkzeug.utils import secure_filename
+
+# ===============================
+# MEMORY OPTIMIZATION FOR RAILWAY
+# ===============================
+# Limit TensorFlow memory growth
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TF info/warning logs
+tf.config.set_soft_device_placement(True)
+
+# Limit TensorFlow to use minimal threads (saves ~50-100MB)
+tf.config.threading.set_intra_op_parallelism_threads(1)
+tf.config.threading.set_inter_op_parallelism_threads(1)
 
 # Keras 3 unified imports
 try:
@@ -25,7 +37,6 @@ from docx import Document
 from PIL import Image
 import tempfile
 import pytesseract
-from lime.lime_text import LimeTextExplainer
 import logging
 
 # Configure logging to see errors in the console/logs
@@ -39,7 +50,7 @@ if TESSERACT_CMD:
 elif os.name == "nt" and os.path.exists(WINDOWS_TESSERACT_PATH):
     pytesseract.pytesseract.tesseract_cmd = WINDOWS_TESSERACT_PATH
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route("/", methods=["GET"])
 def health_check():
@@ -60,36 +71,55 @@ MODEL_PATH = os.path.join(BASE_DIR, "model", "fake_job_bilstm.keras")
 TOKENIZER_PATH = os.path.join(BASE_DIR, "model", "tokenizer.pkl")
 
 # ===============================
-# LOAD MODEL & TOKENIZER
+# LAZY-LOAD MODEL & TOKENIZER
 # ===============================
-try:
-    model = load_model(MODEL_PATH)
-except Exception as e:
-    print(f"FAILED TO LOAD MODEL: {str(e)}")
-    # Initialize a dummy variable to avoid crash
-    model = None
-
-
-with open(TOKENIZER_PATH, "rb") as f:
-    tokenizer = pickle.load(f)
-    # Ensure tokenizer respects the model's vocabulary limit
-    if not hasattr(tokenizer, 'num_words') or tokenizer.num_words is None or tokenizer.num_words > 50000:
-        tokenizer.num_words = 50000
-
-print("Model and tokenizer loaded successfully")
+# Use lazy loading to avoid duplicating memory in Gunicorn fork.
+_model = None
+_tokenizer = None
 
 MAX_LEN = 300
-explainer = LimeTextExplainer(class_names=["Real Job", "Fake Job"])
-def predict_proba(texts):
-    if model is None:
-        return np.array([[0.5, 0.5]] * len(texts))
-    
-    sequences = tokenizer.texts_to_sequences(texts)
-    # CLIP indices to 49999 just in case (model limit 50000)
-    sequences = [[min(idx, 49999) for idx in seq] for seq in sequences]
-    padded = pad_sequences(sequences, maxlen=MAX_LEN)
-    preds = model.predict(padded, verbose=0)
-    return np.hstack((1 - preds, preds))
+
+def get_model():
+    """Lazy-load the Keras model on first request."""
+    global _model
+    if _model is None:
+        try:
+            _model = load_model(MODEL_PATH)
+            logger.info("Model loaded successfully (lazy)")
+        except Exception as e:
+            logger.error(f"FAILED TO LOAD MODEL: {str(e)}")
+    return _model
+
+def get_tokenizer():
+    """Lazy-load the tokenizer on first request."""
+    global _tokenizer
+    if _tokenizer is None:
+        with open(TOKENIZER_PATH, "rb") as f:
+            _tokenizer = pickle.load(f)
+            if not hasattr(_tokenizer, 'num_words') or _tokenizer.num_words is None or _tokenizer.num_words > 50000:
+                _tokenizer.num_words = 50000
+        logger.info("Tokenizer loaded successfully (lazy)")
+    return _tokenizer
+
+print("Model and tokenizer will be loaded on first request")
+
+# ===============================
+# LIGHTWEIGHT EXPLANATION (replaces LIME)
+# ===============================
+def get_keyword_explanation(text):
+    """Return suspicious keywords found in the text as explanation.
+    This replaces LIME which ran 5000+ predictions per call and caused OOM."""
+    suspicious_keywords = [
+        "no interview", "no documents", "apply fast", "limited slots",
+        "work from home", "no experience", "urgent hiring", "immediate joining",
+        "high salary", "contact us today", "whatsapp", "telegram",
+        "guaranteed income", "easy money", "part time data entry",
+        "earning potential", "good salary", "dm me", "inbox me",
+        "fast-growing startup", "impact millions", "fictional", "demo only"
+    ]
+    text_lower = text.lower()
+    found = [kw for kw in suspicious_keywords if kw in text_lower]
+    return found if found else ["No obvious red flags detected"]
 
 # ===============================
 # TEXT PREPROCESSING
@@ -262,6 +292,9 @@ def predict():
 
         text = preprocess_text(raw_text)
 
+        model = get_model()
+        tokenizer = get_tokenizer()
+
         sequence = tokenizer.texts_to_sequences([text])
         # Safety filter: ensure all word indices are within embedding layer range [0, 50000)
         sequence = [[min(idx, 49999) for idx in seq] for seq in sequence]
@@ -280,17 +313,8 @@ def predict():
         preds = model.predict(padded, verbose=0)
         prob_fake = float(preds[0][0])
 
-        # LIME explanation (can be slow!)
-        try:
-            exp = explainer.explain_instance(
-                text,
-                predict_proba,
-                num_features=5
-            )
-            explanation = [word for word, score in exp.as_list()]
-        except Exception as lime_err:
-            logger.warning(f"LIME explanation failed: {str(lime_err)}")
-            explanation = ["Explanation unavailable"]
+        # Lightweight keyword explanation (replaces LIME to avoid OOM)
+        explanation = get_keyword_explanation(raw_text)
 
         # ML decision
         if prob_fake >= 0.5:
@@ -313,6 +337,9 @@ def predict():
 
         incomplete_flag = is_incomplete_job(text)
 
+        # Force garbage collection to free memory after prediction
+        gc.collect()
+
         return jsonify({
             "prediction": result,
             "confidence": round(confidence, 2),
@@ -320,6 +347,7 @@ def predict():
             "explanation": explanation
         })
     except Exception as e:
+        gc.collect()  # Clean up even on error
         logger.error(f"Prediction error: {str(e)}", exc_info=True)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
@@ -369,6 +397,9 @@ def predict_file():
             return jsonify({"error": "Extracted text is too short for analysis. Please provide a more complete job posting."}), 400
         
         # Generate prediction using existing pipeline
+        model = get_model()
+        tokenizer = get_tokenizer()
+
         sequence = tokenizer.texts_to_sequences([text])
 
         # SAFETY CLIP: Ensure indices don't exceed model embedding limit (50,000)
@@ -380,6 +411,9 @@ def predict_file():
             padding="post",
             truncating="post"
         )
+
+        if model is None:
+            return jsonify({"error": "Model not loaded"}), 500
         
         prob_fake = float(model.predict(padded, verbose=0)[0][0])
         
@@ -412,6 +446,9 @@ def predict_file():
         # INCOMPLETE FLAG
         # ===============================
         incomplete_flag = is_incomplete_job(text)
+
+        # Force garbage collection to free memory
+        gc.collect()
         
         return jsonify({
             "prediction": result,
@@ -422,6 +459,7 @@ def predict_file():
         })
     
     except Exception as e:
+        gc.collect()
         logger.error(f"File prediction error: {str(e)}", exc_info=True)
         return jsonify({"error": f"Error processing file: {str(e)}"}), 500
 

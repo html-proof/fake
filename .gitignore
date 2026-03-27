@@ -1,0 +1,15 @@
+**/.venv/
+**/__pycache__/
+*.pyc
+.env
+node_modules/
+frontend/
+
+.ipynb_checkpoints/
+
+*.h5
+*.pt
+# *.pkl (removed to allow tokenizer.pkl)
+
+.DS_Store
+Thumbs.db

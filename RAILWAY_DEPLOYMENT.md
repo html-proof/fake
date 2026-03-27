@@ -19,10 +19,11 @@ You also do not need `PYTHON_VERSION` here because the Docker image already pins
 ## 2. Build and start behavior
 - Railway will use the root `Dockerfile`.
 - The Docker image installs `tesseract-ocr`, `libgl1`, and `libglib2.0-0` during build.
-- The container starts Gunicorn and binds to Railway's injected `PORT`.
+- The deployment is pinned by `railway.toml` to start with `./start.sh`.
+- The startup script reads Railway's injected `PORT` and launches Gunicorn safely.
 
 ```dockerfile
-CMD ["sh", "-c", "gunicorn --workers 1 --timeout 120 --bind 0.0.0.0:${PORT:-5000} backend.app:app"]
+CMD ["./start.sh"]
 ```
 
 ## 3. Add variables quickly

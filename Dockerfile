@@ -25,8 +25,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code into the container at /app
 COPY . .
 
+# Ensure the startup script is executable inside the container.
+RUN chmod +x /app/start.sh
+
 # Expose the port the app runs on
 EXPOSE 5000
 
-# Run the application with Gunicorn on Railway's injected PORT.
-CMD ["sh", "-c", "gunicorn --workers 1 --timeout 120 --bind 0.0.0.0:${PORT:-5000} backend.app:app"]
+# Run the application with the shared startup script.
+CMD ["./start.sh"]

@@ -19,6 +19,7 @@ You also do not need `PYTHON_VERSION` here because the Docker image already pins
 ## 2. Build and start behavior
 - Railway will use the root `Dockerfile`.
 - The Docker image installs `tesseract-ocr`, `libgl1`, and `libglib2.0-0` during build.
+- The Docker build also downloads `backend/model/fake_job_bilstm.keras` through Git LFS in a separate build stage.
 - The deployment is pinned by `railway.toml` to start with `./start.sh`.
 - The startup script reads Railway's injected `PORT` and launches Gunicorn safely.
 
